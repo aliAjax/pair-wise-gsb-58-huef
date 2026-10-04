@@ -14,10 +14,14 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   CaseStatusBadge,
+  OutcomeBadge,
   RiskBadge,
   caseStatusLabel,
 } from "../components/Badges";
-import { useGetCasesQuery } from "../services/api";
+import {
+  useGetCaseOutcomesQuery,
+  useGetCasesQuery,
+} from "../services/api";
 import type { CaseStatus } from "../models/types";
 
 type CaseFilter = "open" | "all" | CaseStatus;
@@ -25,7 +29,10 @@ type CaseFilter = "open" | "all" | CaseStatus;
 export function CasesPage() {
   const navigate = useNavigate();
   const { data: cases = [] } = useGetCasesQuery();
+  const { data: outcomes = [] } = useGetCaseOutcomesQuery();
   const [filter, setFilter] = useState<CaseFilter>("open");
+
+  const outcomeByCase = new Map(outcomes.map((item) => [item.caseId, item]));
 
   const visibleCases = useMemo(() => {
     if (filter === "all") {
@@ -89,14 +96,15 @@ export function CasesPage() {
       </Paper>
 
       <Paper withBorder>
-        <Table.ScrollContainer minWidth={940}>
+        <Table.ScrollContainer minWidth={1060}>
           <Table highlightOnHover verticalSpacing="md">
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>案件编号</Table.Th>
                 <Table.Th>案件摘要</Table.Th>
                 <Table.Th>风险</Table.Th>
-                <Table.Th>状态</Table.Th>
+                <Table.Th>流程状态</Table.Th>
+                <Table.Th>判定结果</Table.Th>
                 <Table.Th>告警数</Table.Th>
                 <Table.Th>负责人</Table.Th>
                 <Table.Th>更新时间</Table.Th>
@@ -124,6 +132,9 @@ export function CasesPage() {
                   </Table.Td>
                   <Table.Td>
                     <CaseStatusBadge value={item.status} />
+                  </Table.Td>
+                  <Table.Td>
+                    <OutcomeBadge kind={outcomeByCase.get(item.id)?.kind ?? "empty"} />
                   </Table.Td>
                   <Table.Td>{item.alertIds.length}</Table.Td>
                   <Table.Td>{item.owner}</Table.Td>

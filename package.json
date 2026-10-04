@@ -7,7 +7,9 @@
     "dev": "vite --host 0.0.0.0 --port 18458",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview --host 0.0.0.0 --port 18458",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "engine:check": "esbuild scripts/engine-check.ts --bundle --platform=node --format=cjs | node",
+    "engine:check:web": "esbuild scripts/engine-check-web.ts --bundle --platform=node --format=cjs | node"
   },
   "dependencies": {
     "@mantine/core": "^9.6.3",

@@ -21,11 +21,16 @@ import {
 import { useNavigate } from "react-router-dom";
 import {
   CaseStatusBadge,
+  OutcomeBadge,
   RiskBadge,
   riskLabel,
   riskOrder,
 } from "../components/Badges";
-import { useGetCasesQuery, useGetDashboardQuery } from "../services/api";
+import {
+  useGetCaseOutcomesQuery,
+  useGetCasesQuery,
+  useGetDashboardQuery,
+} from "../services/api";
 
 const currency = new Intl.NumberFormat("zh-CN", {
   style: "currency",
@@ -37,10 +42,13 @@ export function DashboardPage() {
   const navigate = useNavigate();
   const { data, isLoading } = useGetDashboardQuery();
   const { data: cases = [] } = useGetCasesQuery();
+  const { data: outcomes = [] } = useGetCaseOutcomesQuery();
 
   if (isLoading || !data) {
     return <Text>正在加载调查概览...</Text>;
   }
+
+  const outcomeByCase = new Map(outcomes.map((item) => [item.caseId, item]));
 
   const metrics = [
     {
@@ -60,7 +68,7 @@ export function DashboardPage() {
     {
       label: "活跃案件",
       value: data.activeCases,
-      meta: `${data.pendingReview} 件待复核或补证`,
+      meta: `${data.pendingReview} 件待复核 · ${data.staleRecompute} 件依据失效待重算`,
       icon: Files,
       color: "teal",
     },
@@ -95,6 +103,24 @@ export function DashboardPage() {
           进入告警中心
         </Button>
       </Group>
+
+      {data.staleRecompute > 0 ? (
+        <Paper withBorder p="md" bg="var(--mantine-color-yellow-0)">
+          <Group justify="space-between">
+            <Text size="sm">
+              有 <b>{data.staleRecompute}</b> 件案件的草稿或待复核结论因证据发布新版本而失效，需要依据新版本重算；已通过版本保留提交快照，不受影响。
+            </Text>
+            <Button
+              size="xs"
+              variant="light"
+              color="yellow"
+              onClick={() => navigate("/cases")}
+            >
+              去处理
+            </Button>
+          </Group>
+        </Paper>
+      ) : null}
 
       <SimpleGrid cols={{ base: 1, sm: 2, lg: 4 }}>
         {metrics.map((metric) => {
@@ -132,14 +158,15 @@ export function DashboardPage() {
                 查看全部
               </Button>
             </Group>
-            <Table.ScrollContainer minWidth={720}>
+            <Table.ScrollContainer minWidth={860}>
               <Table highlightOnHover verticalSpacing="sm">
                 <Table.Thead>
                   <Table.Tr>
                     <Table.Th>案件编号</Table.Th>
                     <Table.Th>案件名称</Table.Th>
                     <Table.Th>风险</Table.Th>
-                    <Table.Th>状态</Table.Th>
+                    <Table.Th>流程状态</Table.Th>
+                    <Table.Th>判定结果</Table.Th>
                     <Table.Th>负责人</Table.Th>
                     <Table.Th>下次复核</Table.Th>
                     <Table.Th />
@@ -172,6 +199,11 @@ export function DashboardPage() {
                         </Table.Td>
                         <Table.Td>
                           <CaseStatusBadge value={item.status} />
+                        </Table.Td>
+                        <Table.Td>
+                          <OutcomeBadge
+                            kind={outcomeByCase.get(item.id)?.kind ?? "empty"}
+                          />
                         </Table.Td>
                         <Table.Td>{item.owner}</Table.Td>
                         <Table.Td>

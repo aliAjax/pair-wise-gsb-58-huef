@@ -47,8 +47,8 @@ const conclusionMap: Record<
   submitted: { color: "orange", label: "待复核" },
   approved: { color: "teal", label: "已通过" },
   returned: { color: "red", label: "已退回" },
+  stale: { color: "yellow", label: "依据失效·待重算" },
 };
-
 interface BadgeProps<T extends string> {
   value: T;
 }
@@ -106,3 +106,22 @@ export const riskOrder = (risk: RiskLevel): number => riskMap[risk].order;
 export const riskLabel = (risk: RiskLevel): string => riskMap[risk].label;
 export const caseStatusLabel = (status: CaseStatus): string =>
   caseStatusMap[status].label;
+
+const outcomeStyleMap: Record<string, { color: string; label: string }> = {
+  approved: { color: "teal", label: "已通过·快照保留" },
+  pending_review: { color: "orange", label: "待复核" },
+  stale_recompute: { color: "yellow", label: "依据失效·待重算" },
+  supplement: { color: "red", label: "退回补证" },
+  evidence_pending: { color: "red", label: "待补证" },
+  drafting: { color: "blue", label: "草稿编辑中" },
+  empty: { color: "gray", label: "尚无结论" },
+};
+
+export function OutcomeBadge({ kind }: { kind: string }) {
+  const config = outcomeStyleMap[kind] ?? outcomeStyleMap.empty;
+  return (
+    <Badge color={config.color} variant="light">
+      {config.label}
+    </Badge>
+  );
+}

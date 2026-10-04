@@ -2,7 +2,9 @@ import type {
   Alert,
   AuditLog,
   ConclusionVersion,
+  DecisionBatch,
   Evidence,
+  EvidenceVersion,
   InvestigationCase,
   InvestigationEdge,
   InvestigationNode,
@@ -331,8 +333,17 @@ export const seedEdges: InvestigationEdge[] = [
   },
 ];
 
+type EvidenceSeedInput = Omit<Evidence, "versions"> & {
+  versions: EvidenceVersion[];
+};
+
+const evidenceWith = (input: EvidenceSeedInput): Evidence => ({
+  ...input,
+  versions: input.versions,
+});
+
 export const seedEvidence: Evidence[] = [
-  {
+  evidenceWith({
     id: "EV-017-001",
     caseId: "CASE-2026-017",
     title: "交易明细提取单",
@@ -344,8 +355,21 @@ export const seedEvidence: Evidence[] = [
     attachment: "trade-detail-20260929.csv",
     note: "覆盖 9 月 27 日至 29 日并包含原始流水号。",
     version: 1,
-  },
-  {
+    versions: [
+      {
+        version: 1,
+        title: "交易明细提取单",
+        source: "核心交易系统",
+        strength: "strong",
+        occurredAt: "2026-09-29T00:18:00+08:00",
+        submittedAt: "2026-09-29T07:20:00+08:00",
+        submittedBy: "林澜",
+        attachment: "trade-detail-20260929.csv",
+        note: "覆盖 9 月 27 日至 29 日并包含原始流水号。",
+      },
+    ],
+  }),
+  evidenceWith({
     id: "EV-017-002",
     caseId: "CASE-2026-017",
     title: "设备指纹登录日志",
@@ -355,10 +379,35 @@ export const seedEvidence: Evidence[] = [
     submittedAt: "2026-09-29T07:36:00+08:00",
     submittedBy: "周明",
     attachment: "device-loginelog-20260929.json",
-    note: "包含设备、认证方式与风险标签。",
+    note: "包含设备、认证方式与风险标签；V2 补入二次核身结果。",
     version: 2,
-  },
-  {
+    versions: [
+      {
+        version: 1,
+        title: "设备指纹登录日志",
+        source: "风控日志平台",
+        strength: "medium",
+        occurredAt: "2026-09-29T02:58:00+08:00",
+        submittedAt: "2026-09-29T07:30:00+08:00",
+        submittedBy: "周明",
+        attachment: "device-loginelog-20260929-v1.json",
+        note: "初版缺少二次核身字段，证据强度评为中等。",
+        supersededAt: "2026-09-29T07:36:00+08:00",
+      },
+      {
+        version: 2,
+        title: "设备指纹登录日志",
+        source: "风控日志平台",
+        strength: "strong",
+        occurredAt: "2026-09-29T02:58:00+08:00",
+        submittedAt: "2026-09-29T07:36:00+08:00",
+        submittedBy: "周明",
+        attachment: "device-loginelog-20260929.json",
+        note: "包含设备、认证方式与风险标签；V2 补入二次核身结果。",
+      },
+    ],
+  }),
+  evidenceWith({
     id: "EV-017-003",
     caseId: "CASE-2026-017",
     title: "收款商户登记材料",
@@ -370,8 +419,21 @@ export const seedEvidence: Evidence[] = [
     attachment: "merchant-7791.pdf",
     note: "登记地址与交易 IP 归属地不一致，需要现场或电话核实。",
     version: 1,
-  },
-  {
+    versions: [
+      {
+        version: 1,
+        title: "收款商户登记材料",
+        source: "商户管理系统",
+        strength: "medium",
+        occurredAt: "2026-09-28T22:10:00+08:00",
+        submittedAt: "2026-09-29T08:05:00+08:00",
+        submittedBy: "宋佳",
+        attachment: "merchant-7791.pdf",
+        note: "登记地址与交易 IP 归属地不一致，需要现场或电话核实。",
+      },
+    ],
+  }),
+  evidenceWith({
     id: "EV-015-001",
     caseId: "CASE-2026-015",
     title: "跨案受益关系导出",
@@ -383,8 +445,29 @@ export const seedEvidence: Evidence[] = [
     attachment: "beneficiary-links.xlsx",
     note: "仅证明共同收款方，未证明资金最终归属。",
     version: 1,
-  },
+    versions: [
+      {
+        version: 1,
+        title: "跨案受益关系导出",
+        source: "案件关联分析",
+        strength: "medium",
+        occurredAt: "2026-09-25T14:10:00+08:00",
+        submittedAt: "2026-09-25T15:30:00+08:00",
+        submittedBy: "宋佳",
+        attachment: "beneficiary-links.xlsx",
+        note: "仅证明共同收款方，未证明资金最终归属。",
+      },
+    ],
+  }),
 ];
+
+const alertRefs = (
+  ids: string[],
+  mode: "frozen" | "backfilled",
+): ConclusionVersion["alertRefs"] =>
+  seedAlerts
+    .filter((item) => ids.includes(item.id))
+    .map((item) => ({ alertId: item.id, mode, snapshot: structuredClone(item) }));
 
 export const seedConclusions: ConclusionVersion[] = [
   {
@@ -398,6 +481,41 @@ export const seedConclusions: ConclusionVersion[] = [
     createdBy: "林澜",
     createdAt: "2026-09-29T08:20:00+08:00",
     reviewer: "赵平",
+    evidenceRefs: [
+      {
+        evidenceId: "EV-017-001",
+        version: 1,
+        title: "交易明细提取单",
+        source: "核心交易系统",
+        strength: "strong",
+        occurredAt: "2026-09-29T00:18:00+08:00",
+        mode: "frozen",
+      },
+      {
+        evidenceId: "EV-017-002",
+        version: 2,
+        title: "设备指纹登录日志",
+        source: "风控日志平台",
+        strength: "strong",
+        occurredAt: "2026-09-29T02:58:00+08:00",
+        mode: "frozen",
+      },
+      {
+        evidenceId: "EV-017-003",
+        version: 1,
+        title: "收款商户登记材料",
+        source: "商户管理系统",
+        strength: "medium",
+        occurredAt: "2026-09-28T22:10:00+08:00",
+        mode: "frozen",
+      },
+    ],
+    alertRefs: alertRefs(
+      ["AL-20260929-001", "AL-20260929-002", "AL-20260928-009"],
+      "frozen",
+    ),
+    basisStatus: "frozen",
+    batchId: "BAT-017-001",
   },
   {
     id: "CV-016-001",
@@ -410,6 +528,11 @@ export const seedConclusions: ConclusionVersion[] = [
     createdBy: "周明",
     createdAt: "2026-09-29T07:55:00+08:00",
     reviewer: "赵平",
+    // 历史结论提交时案件尚无证据登记：回填失败，标记待补证
+    evidenceRefs: [],
+    alertRefs: alertRefs(["AL-20260927-012"], "backfilled"),
+    basisStatus: "evidence_pending",
+    batchId: "BAT-016-001",
   },
   {
     id: "CV-015-001",
@@ -423,6 +546,125 @@ export const seedConclusions: ConclusionVersion[] = [
     createdAt: "2026-09-28T19:20:00+08:00",
     reviewer: "赵平",
     reviewerNote: "补充商户合同与付款用途后再提交，不得以关联代替结论。",
+    evidenceRefs: [
+      {
+        evidenceId: "EV-015-001",
+        version: 1,
+        title: "跨案受益关系导出",
+        source: "案件关联分析",
+        strength: "medium",
+        occurredAt: "2026-09-25T14:10:00+08:00",
+        mode: "backfilled",
+      },
+    ],
+    alertRefs: alertRefs(["AL-20260925-018"], "backfilled"),
+    basisStatus: "backfilled",
+    batchId: "BAT-015-001",
+    reviewerBatchId: "BAT-015-002",
+  },
+];
+
+export const seedBatches: DecisionBatch[] = [
+  {
+    id: "BAT-017-001",
+    caseId: "CASE-2026-017",
+    kind: "submit_conclusion",
+    status: "completed",
+    role: "winner",
+    assignedVersion: 1,
+    createdAt: "2026-09-29T08:20:00+08:00",
+    completedAt: "2026-09-29T08:20:00+08:00",
+    stepsCompleted: [
+      "freeze_basis",
+      "insert_conclusion",
+      "touch_case",
+      "audit",
+    ],
+    payloadHash: "seed0171",
+    payload: {
+      caseId: "CASE-2026-017",
+      actor: "林澜",
+      disposition: "observe",
+      rationale:
+        "现有材料能够建立设备与资金关联，但控制关系仍需认证记录或访谈材料补强。",
+      riskControls: ["账户只收不付", "设备登录二次核身", "小时级交易监测"],
+      submit: false,
+      arrivalAt: "2026-09-29T08:20:00+08:00",
+      attemptId: "ATT-SEED-017",
+    },
+  },
+  {
+    id: "BAT-016-001",
+    caseId: "CASE-2026-016",
+    kind: "submit_conclusion",
+    status: "completed",
+    role: "winner",
+    assignedVersion: 1,
+    createdAt: "2026-09-29T07:55:00+08:00",
+    completedAt: "2026-09-29T07:55:00+08:00",
+    stepsCompleted: [
+      "freeze_basis",
+      "insert_conclusion",
+      "update_case",
+      "resolve_conflicts",
+      "audit",
+    ],
+    payloadHash: "seed0161",
+    payload: {
+      caseId: "CASE-2026-016",
+      actor: "周明",
+      disposition: "freeze",
+      rationale: "新开户后集中提现且登录地点跳跃，建议短期冻结非柜面支付。",
+      riskControls: ["暂停非柜面支付", "限制高风险收款方入账"],
+      submit: true,
+      arrivalAt: "2026-09-29T07:55:00+08:00",
+      attemptId: "ATT-SEED-016",
+    },
+  },
+  {
+    id: "BAT-015-001",
+    caseId: "CASE-2026-015",
+    kind: "submit_conclusion",
+    status: "completed",
+    role: "winner",
+    assignedVersion: 1,
+    createdAt: "2026-09-28T19:10:00+08:00",
+    completedAt: "2026-09-28T19:10:00+08:00",
+    stepsCompleted: [
+      "freeze_basis",
+      "insert_conclusion",
+      "update_case",
+      "resolve_conflicts",
+      "audit",
+    ],
+    payloadHash: "seed0151",
+    payload: {
+      caseId: "CASE-2026-015",
+      actor: "宋佳",
+      disposition: "observe",
+      rationale: "跨案交易交集达到观察阈值，但缺交易用途说明。",
+      riskControls: ["提高交易监测频次"],
+      submit: true,
+      arrivalAt: "2026-09-28T19:10:00+08:00",
+      attemptId: "ATT-SEED-015",
+    },
+  },
+  {
+    id: "BAT-015-002",
+    caseId: "CASE-2026-015",
+    kind: "review_conclusion",
+    status: "completed",
+    createdAt: "2026-09-28T19:20:00+08:00",
+    completedAt: "2026-09-28T19:20:00+08:00",
+    stepsCompleted: ["update_conclusion", "update_case", "audit"],
+    payloadHash: "seed0152",
+    payload: {
+      caseId: "CASE-2026-015",
+      conclusionId: "CV-015-001",
+      decision: "return",
+      reviewerNote: "补充商户合同与付款用途后再提交，不得以关联代替结论。",
+      actor: "赵平",
+    },
   },
 ];
 
@@ -449,7 +691,9 @@ export const seedAuditLogs: AuditLog[] = [
     at: "2026-09-29T07:55:00+08:00",
     actor: "周明",
     action: "提交复核",
-    detail: "结论版本 V1 提交，建议冻结非柜面支付。",
+    detail:
+      "结论版本 V1 提交，建议冻结非柜面支付；历史结论缺少证据版本，已标记待补证。",
+    batchId: "BAT-016-001",
   },
   {
     id: "LOG-1004",
@@ -458,5 +702,6 @@ export const seedAuditLogs: AuditLog[] = [
     actor: "赵平",
     action: "退回补证",
     detail: "结论退回，要求补充商户合同与交易用途。",
+    batchId: "BAT-015-002",
   },
 ];

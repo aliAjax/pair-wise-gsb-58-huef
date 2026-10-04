@@ -10,7 +10,16 @@ import { Provider } from "react-redux";
 import { BrowserRouter } from "react-router-dom";
 import { App } from "./App";
 import { store } from "./app/store";
+import { recoverInterruptedBatches } from "./services/decisionEngine";
 import "./styles.css";
+
+// 写库中断后重启：从最近完整批次继续，只补未完成项，不产生重复版本或审计
+try {
+  recoverInterruptedBatches();
+} catch (error) {
+  // 恢复失败时仍允许打开界面，用户可在审计页手动重试
+  console.error("判定批次恢复失败", error);
+}
 
 const theme = createTheme({
   primaryColor: "teal",
