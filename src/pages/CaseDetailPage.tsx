@@ -24,19 +24,22 @@ import {
   ArrowLeft,
   Check,
   FilePlus2,
+  Files,
   GitBranchPlus,
   RotateCcw,
   Send,
 } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useAppDispatch, useAppSelector } from "../app/hooks";
 import {
   CaseStatusBadge,
   ConclusionStatusBadge,
   EvidenceStrengthBadge,
+  EvidenceVersionBadge,
   RiskBadge,
 } from "../components/Badges";
+import { BasisPanel } from "../components/BasisPanel";
 import {
   focusEvidence,
   focusTimeline,
@@ -49,6 +52,8 @@ import {
 } from "../features/timeline/TransactionTimeline";
 import type {
   CaseDisposition,
+  ConclusionVersion,
+  Evidence,
   EvidenceStrength,
   NodeKind,
   RiskLevel,
@@ -60,10 +65,12 @@ import {
   useGetCaseWorkspaceQuery,
   useReviewConclusionMutation,
   useSaveConclusionMutation,
+  useSupplementEvidenceMutation,
   useTransitionCaseMutation,
   useUpdateGraphNodeMutation,
 } from "../services/api";
-import { createId, nowIso } from "../services/mockStorage";
+import { buildConclusionView, currentEvidence } from "../services/decisionModel";
+import { createId } from "../services/mockStorage";
 
 const dispositionLabels: Record<CaseDisposition, string> = {
   freeze: "建议冻结",
@@ -78,10 +85,30 @@ const errorMessage = (error: unknown): string => {
   return "操作失败，请检查输入后重试。";
 };
 
+interface EvidenceFormState {
+  seriesId?: string;
+  title: string;
+  source: string;
+  strength: EvidenceStrength;
+  occurredAt: string;
+  attachment: string;
+  note: string;
+}
+
+const emptyEvidenceForm: EvidenceFormState = {
+  title: "",
+  source: "",
+  strength: "medium",
+  occurredAt: "2026-09-29T09:00",
+  attachment: "",
+  note: "",
+};
+
 export function CaseDetailPage() {
   const { caseId = "" } = useParams();
   const navigate = useNavigate();
   const dispatch = useAppDispatch();
+  const actor = useAppSelector((state) => state.alertsUi.actor);
   const selectedNodeId = useAppSelector(
     (state) => state.alertsUi.selectedNodeId,
   );
@@ -102,6 +129,8 @@ export function CaseDetailPage() {
   const [updateNode] = useUpdateGraphNodeMutation();
   const [addEvidence, { isLoading: isAddingEvidence }] =
     useAddEvidenceMutation();
+  const [supplementEvidence, { isLoading: isSupplementing }] =
+    useSupplementEvidenceMutation();
   const [saveConclusion, { isLoading: isSavingConclusion }] =
     useSaveConclusionMutation();
   const [transitionCase, { isLoading: isTransitioning }] =
@@ -113,6 +142,7 @@ export function CaseDetailPage() {
   const [evidenceOpened, evidenceModal] = useDisclosure(false);
   const [conclusionOpened, conclusionModal] = useDisclosure(false);
   const [reviewNote, setReviewNote] = useState("");
+  const [reviewTargetId, setReviewTargetId] = useState<string | null>(null);
   const [nodeForm, setNodeForm] = useState({
     sourceId: "",
     kind: "account" as NodeKind,
@@ -126,19 +156,38 @@ export function CaseDetailPage() {
     relationExplanation: "",
     amount: 0,
   });
-  const [evidenceForm, setEvidenceForm] = useState({
-    title: "",
-    source: "",
-    strength: "medium" as EvidenceStrength,
-    occurredAt: "2026-09-29T09:00",
-    attachment: "",
-    note: "",
-  });
+  const [evidenceForm, setEvidenceForm] =
+    useState<EvidenceFormState>(emptyEvidenceForm);
   const [conclusionForm, setConclusionForm] = useState({
     disposition: "observe" as CaseDisposition,
     rationale: "",
     riskControls: "",
   });
+
+  const caseCurrentEvidence = useMemo(
+    () => (data ? currentEvidence(caseId, data.evidence) : []),
+    [data, caseId],
+  );
+
+  // 台账按逻辑证据系列分组，每系列展示全部版本
+  const evidenceSeries = useMemo(() => {
+    if (!data) {
+      return [];
+    }
+    const groups = new Map<string, Evidence[]>();
+    data.evidence
+      .filter((item) => item.caseId === caseId)
+      .forEach((item) => {
+        groups.set(item.seriesId, [
+          ...(groups.get(item.seriesId) ?? []),
+          item,
+        ]);
+      });
+    return Array.from(groups.entries()).map(([seriesId, versions]) => {
+      const sorted = versions.sort((a, b) => b.version - a.version);
+      return { seriesId, versions: sorted, latest: sorted[0] };
+    });
+  }, [data, caseId]);
 
   if (isLoading) {
     return <Text>正在加载案件工作区...</Text>;
@@ -156,7 +205,31 @@ export function CaseDetailPage() {
     data.case.alertIds.includes(item.id),
   );
   const selectedNode = data.nodes.find((item) => item.id === selectedNodeId);
-  const latestConclusion = data.conclusions[0];
+
+  const conclusionViews = data.conclusions.map((item) =>
+    buildConclusionView(item, {
+      evidence: data.evidence,
+      conclusions: data.conclusions,
+      alerts: allAlerts,
+    }),
+  );
+  const submittedConclusion = data.conclusions.find(
+    (item) => item.status === "submitted",
+  );
+  const reviewTarget: ConclusionVersion | undefined =
+    data.conclusions.find((item) => item.id === reviewTargetId) ??
+    submittedConclusion;
+
+  const staleNotice = data.hasStaleBasis ? (
+    <Alert color="yellow" icon={<RotateCcw size={16} />}>
+      案件存在依据已更新的草稿或待复核结论，需基于新证据版本重算；已通过版本仍保留提交时的冻结快照。
+    </Alert>
+  ) : null;
+  const missingNotice = data.hasMissingBasis ? (
+    <Alert color="red" icon={<Files size={16} />}>
+      旧结论未能按提交时间回填证据版本，已标记待补证；补充证据后请重新提交结论。
+    </Alert>
+  ) : null;
 
   const handleTimelineFocus = (event?: TimelineEvent) => {
     dispatch(focusTimeline(event?.id));
@@ -226,7 +299,25 @@ export function CaseDetailPage() {
     }
   };
 
-  const handleAddEvidence = async () => {
+  const openRegisterEvidence = () => {
+    setEvidenceForm(emptyEvidenceForm);
+    evidenceModal.open();
+  };
+
+  const openSupplementEvidence = (series: Evidence) => {
+    setEvidenceForm({
+      seriesId: series.seriesId,
+      title: series.title,
+      source: series.source,
+      strength: series.strength,
+      occurredAt: "2026-09-29T09:00",
+      attachment: "",
+      note: "",
+    });
+    evidenceModal.open();
+  };
+
+  const handleSubmitEvidence = async () => {
     if (
       !evidenceForm.title.trim() ||
       !evidenceForm.source.trim() ||
@@ -239,36 +330,54 @@ export function CaseDetailPage() {
       });
       return;
     }
+    const common = {
+      caseId,
+      actor,
+      title: evidenceForm.title.trim(),
+      source: evidenceForm.source.trim(),
+      strength: evidenceForm.strength,
+      occurredAt: new Date(evidenceForm.occurredAt).toISOString(),
+      attachment: evidenceForm.attachment.trim(),
+      note: evidenceForm.note.trim() || "未补充说明。",
+    };
     try {
-      await addEvidence({
-        caseId,
-        title: evidenceForm.title.trim(),
-        source: evidenceForm.source.trim(),
-        strength: evidenceForm.strength,
-        occurredAt: new Date(evidenceForm.occurredAt).toISOString(),
-        attachment: evidenceForm.attachment.trim(),
-        note: evidenceForm.note.trim() || "未补充说明。",
-      }).unwrap();
-      notifications.show({
-        color: "teal",
-        title: "证据已登记",
-        message: "证据来源、发生时间与提交时间已写入台账。",
-      });
+      if (evidenceForm.seriesId) {
+        await supplementEvidence({
+          ...common,
+          seriesId: evidenceForm.seriesId,
+        }).unwrap();
+        notifications.show({
+          color: "teal",
+          title: "证据新版本已提交",
+          message:
+            "旧版本已保留并标记替代；引用旧版本的草稿与待复核结论已失效，已通过版本不受影响。",
+        });
+      } else {
+        await addEvidence(common).unwrap();
+        notifications.show({
+          color: "teal",
+          title: "证据已登记",
+          message: "证据来源、发生时间与提交时间已写入台账。",
+        });
+      }
       evidenceModal.close();
-      setEvidenceForm((current) => ({
-        ...current,
-        title: "",
-        source: "",
-        attachment: "",
-        note: "",
-      }));
+      setEvidenceForm(emptyEvidenceForm);
     } catch (mutationError) {
       notifications.show({
         color: "red",
-        title: "证据登记失败",
+        title: evidenceForm.seriesId ? "证据补充失败" : "证据登记失败",
         message: errorMessage(mutationError),
       });
     }
+  };
+
+  const openConclusionModal = (prefill?: ConclusionVersion) => {
+    setConclusionForm({
+      disposition: prefill?.disposition ?? "observe",
+      rationale: prefill?.rationale ?? "",
+      riskControls: prefill?.riskControls.join("\n") ?? "",
+    });
+    conclusionModal.open();
   };
 
   const handleSaveConclusion = async (submit: boolean) => {
@@ -281,8 +390,9 @@ export function CaseDetailPage() {
       return;
     }
     try {
-      await saveConclusion({
+      const result = await saveConclusion({
         caseId,
+        actor,
         disposition: conclusionForm.disposition,
         rationale: conclusionForm.rationale.trim(),
         riskControls: conclusionForm.riskControls
@@ -291,11 +401,22 @@ export function CaseDetailPage() {
           .filter(Boolean),
         submit,
       }).unwrap();
-      notifications.show({
-        color: "teal",
-        title: submit ? "已提交复核" : "草稿已保存",
-        message: "结论版本已锁定创建人和创建时间。",
-      });
+      if (result.conflict) {
+        notifications.show({
+          color: "grape",
+          title: "存在先到的提交",
+          message:
+            "另一位调查员的结论已先入库；你的内容已保留为冲突草稿，可在结论页并排查看两边冻结依据。",
+        });
+      } else {
+        notifications.show({
+          color: "teal",
+          title: submit ? "已提交复核" : "草稿已保存",
+          message: submit
+            ? "提交时的证据版本与告警已冻结，后续证据更新不会改变本版本依据。"
+            : "草稿已冻结当时依据，证据更新后草稿将失效重算。",
+        });
+      }
       conclusionModal.close();
       setConclusionForm({
         disposition: "observe",
@@ -315,7 +436,7 @@ export function CaseDetailPage() {
     status: "investigating" | "pending_review" | "supplement" | "closed",
   ) => {
     try {
-      await transitionCase({ caseId, status }).unwrap();
+      await transitionCase({ caseId, status, actor }).unwrap();
       notifications.show({
         color: "teal",
         title: "状态已更新",
@@ -331,7 +452,7 @@ export function CaseDetailPage() {
   };
 
   const handleReview = async (decision: "approve" | "return") => {
-    if (!latestConclusion) {
+    if (!reviewTarget) {
       return;
     }
     if (reviewNote.trim().length < 6) {
@@ -345,16 +466,21 @@ export function CaseDetailPage() {
     try {
       await reviewConclusion({
         caseId,
-        conclusionId: latestConclusion.id,
+        actor: "赵平",
+        conclusionId: reviewTarget.id,
         decision,
         reviewerNote: reviewNote.trim(),
       }).unwrap();
       notifications.show({
         color: decision === "approve" ? "teal" : "orange",
         title: decision === "approve" ? "复核通过" : "已退回补证",
-        message: "复核动作和意见已写入审计日志。",
+        message:
+          decision === "approve"
+            ? "结论通过，提交时冻结的证据版本与告警快照作为最终依据永久保留。"
+            : "已退回补证，需基于新证据版本重新提交。",
       });
       setReviewNote("");
+      setReviewTargetId(null);
     } catch (mutationError) {
       notifications.show({
         color: "red",
@@ -380,10 +506,11 @@ export function CaseDetailPage() {
             <Group gap="sm">
               <Title order={2}>{data.case.title}</Title>
               <RiskBadge value={data.case.riskLevel} />
-              <CaseStatusBadge value={data.case.status} />
+              <CaseStatusBadge value={data.effectiveStatus} />
             </Group>
             <Text c="dimmed" size="sm" mt={5}>
-              {data.case.id} · 负责人 {data.case.owner} · 更新于{" "}
+              {data.case.id} · 负责人 {data.case.owner} · 当前操作 {actor} ·
+              更新于{" "}
               {new Date(data.case.updatedAt).toLocaleString("zh-CN", {
                 hour12: false,
               })}
@@ -401,18 +528,21 @@ export function CaseDetailPage() {
           <Button
             variant="light"
             leftSection={<FilePlus2 size={16} />}
-            onClick={evidenceModal.open}
+            onClick={openRegisterEvidence}
           >
             登记证据
           </Button>
           <Button
             leftSection={<Send size={16} />}
-            onClick={conclusionModal.open}
+            onClick={() => openConclusionModal()}
           >
             新建结论版本
           </Button>
         </Group>
       </Group>
+
+      {staleNotice}
+      {missingNotice}
 
       <Paper withBorder p="md">
         <Group justify="space-between">
@@ -536,7 +666,7 @@ export function CaseDetailPage() {
                       联动时间轴
                     </Text>
                     <Text size="xs" c="dimmed">
-                      点击事件可高亮关系或证据
+                      点击事件可高亮关系或证据（仅展示各证据当前版本）
                     </Text>
                   </div>
                   {focusedTimelineId ? (
@@ -555,7 +685,7 @@ export function CaseDetailPage() {
                   <TransactionTimeline
                     alerts={caseAlerts}
                     edges={data.edges}
-                    evidence={data.evidence}
+                    evidence={caseCurrentEvidence}
                     focusedId={focusedTimelineId}
                     onFocus={handleTimelineFocus}
                   />
@@ -571,78 +701,98 @@ export function CaseDetailPage() {
               <div>
                 <Text fw={600}>证据台账</Text>
                 <Text size="sm" c="dimmed">
-                  每份证据记录来源、发生时间、提交时间和证据强度。
+                  同一份证据补充版本后旧版本永久保留；结论按提交时冻结的版本引用。
                 </Text>
               </div>
               <Button
                 leftSection={<FilePlus2 size={16} />}
-                onClick={evidenceModal.open}
+                onClick={openRegisterEvidence}
               >
                 登记证据
               </Button>
             </Group>
-            <Table.ScrollContainer minWidth={980}>
+            <Table.ScrollContainer minWidth={1080}>
               <Table highlightOnHover verticalSpacing="sm">
                 <Table.Thead>
                   <Table.Tr>
-                    <Table.Th>证据名称</Table.Th>
+                    <Table.Th>证据名称 / 版本</Table.Th>
                     <Table.Th>来源</Table.Th>
                     <Table.Th>强度</Table.Th>
                     <Table.Th>发生时间</Table.Th>
                     <Table.Th>提交记录</Table.Th>
                     <Table.Th>附件标识</Table.Th>
-                    <Table.Th>说明</Table.Th>
+                    <Table.Th>版本状态 / 操作</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
-                  {data.evidence.map((item) => (
-                    <Table.Tr
-                      key={item.id}
-                      className={
-                        focusedEvidenceId === item.id
-                          ? "table-row-focused"
-                          : ""
-                      }
-                    >
-                      <Table.Td>
-                        <Text size="sm" fw={600}>
-                          {item.title}
-                        </Text>
-                        <Text size="xs" c="dimmed" ff="monospace">
-                          {item.id}
-                        </Text>
-                      </Table.Td>
-                      <Table.Td>{item.source}</Table.Td>
-                      <Table.Td>
-                        <EvidenceStrengthBadge value={item.strength} />
-                      </Table.Td>
-                      <Table.Td>
-                        {new Date(item.occurredAt).toLocaleString("zh-CN", {
-                          hour12: false,
-                        })}
-                      </Table.Td>
-                      <Table.Td>
-                        <Text size="xs">
-                          {item.submittedBy} · V{item.version}
-                        </Text>
-                        <Text size="xs" c="dimmed">
-                          {new Date(item.submittedAt).toLocaleString("zh-CN", {
+                  {evidenceSeries.flatMap((series) =>
+                    series.versions.map((item, index) => (
+                      <Table.Tr
+                        key={item.id}
+                        className={
+                          focusedEvidenceId === item.id
+                            ? "table-row-focused"
+                            : ""
+                        }
+                        style={
+                          item.versionState === "superseded"
+                            ? { opacity: 0.62 }
+                            : undefined
+                        }
+                      >
+                        <Table.Td>
+                          <Text size="sm" fw={600}>
+                            {item.title}
+                          </Text>
+                          <Text size="xs" c="dimmed" ff="monospace">
+                            {item.id} · V{item.version}
+                            {index > 0 ? "（历史版本）" : ""}
+                          </Text>
+                        </Table.Td>
+                        <Table.Td>{item.source}</Table.Td>
+                        <Table.Td>
+                          <EvidenceStrengthBadge value={item.strength} />
+                        </Table.Td>
+                        <Table.Td>
+                          {new Date(item.occurredAt).toLocaleString("zh-CN", {
                             hour12: false,
                           })}
-                        </Text>
-                      </Table.Td>
-                      <Table.Td>
-                        <Text size="xs" ff="monospace">
-                          {item.attachment}
-                        </Text>
-                      </Table.Td>
-                      <Table.Td maw={300}>
-                        <Text size="xs" c="dimmed">
-                          {item.note}
-                        </Text>
-                      </Table.Td>
-                    </Table.Tr>
-                  ))}
+                        </Table.Td>
+                        <Table.Td>
+                          <Text size="xs">
+                            {item.submittedBy} ·{" "}
+                            {new Date(item.submittedAt).toLocaleString("zh-CN", {
+                              hour12: false,
+                            })}
+                          </Text>
+                        </Table.Td>
+                        <Table.Td>
+                          <Text size="xs" ff="monospace">
+                            {item.attachment}
+                          </Text>
+                        </Table.Td>
+                        <Table.Td>
+                          <Stack gap={6} align="flex-start">
+                            <EvidenceVersionBadge value={item.versionState} />
+                            {item.versionState === "current" ? (
+                              <Button
+                                size="compact-xs"
+                                variant="light"
+                                color="cyan"
+                                onClick={() => openSupplementEvidence(item)}
+                              >
+                                补充新版本
+                              </Button>
+                            ) : (
+                              <Text size="xs" c="dimmed">
+                                被 V{series.versions[0].version} 替代
+                              </Text>
+                            )}
+                          </Stack>
+                        </Table.Td>
+                      </Table.Tr>
+                    )),
+                  )}
                 </Table.Tbody>
               </Table>
             </Table.ScrollContainer>
@@ -657,47 +807,74 @@ export function CaseDetailPage() {
                   <div>
                     <Text fw={600}>结论版本</Text>
                     <Text size="sm" c="dimmed">
-                      已通过的版本不可被覆盖，后续修改将产生新版本。
+                      提交即冻结证据版本与告警；已通过版本永久保留提交快照。
                     </Text>
                   </div>
-                  <Button onClick={conclusionModal.open}>新建版本</Button>
+                  <Button onClick={() => openConclusionModal()}>新建版本</Button>
                 </Group>
                 <Stack gap={0}>
-                  {data.conclusions.map((item, index) => (
-                    <div key={item.id}>
+                  {conclusionViews.map((view, index) => (
+                    <div key={view.conclusion.id}>
                       {index > 0 ? <Divider /> : null}
                       <Stack gap="xs" p="md">
                         <Group justify="space-between">
                           <Group>
-                            <Text fw={600}>V{item.version}</Text>
-                            <ConclusionStatusBadge value={item.status} />
+                            <Text fw={600}>V{view.conclusion.version}</Text>
+                            <ConclusionStatusBadge
+                              value={view.conclusion.status}
+                            />
                             <Badge variant="light" color="gray">
-                              {dispositionLabels[item.disposition]}
+                              {dispositionLabels[view.conclusion.disposition]}
                             </Badge>
                           </Group>
                           <Text size="xs" c="dimmed">
-                            {item.createdBy} ·{" "}
-                            {new Date(item.createdAt).toLocaleString("zh-CN", {
-                              hour12: false,
-                            })}
+                            {view.conclusion.createdBy} ·{" "}
+                            {new Date(
+                              view.conclusion.createdAt,
+                            ).toLocaleString("zh-CN", { hour12: false })}
                           </Text>
                         </Group>
-                        <Text size="sm">{item.rationale}</Text>
+                        <Text size="sm">{view.conclusion.rationale}</Text>
                         <Group gap="xs">
-                          {item.riskControls.map((control) => (
-                            <Badge key={control} variant="outline" color="gray">
+                          {view.conclusion.riskControls.map((control) => (
+                            <Badge
+                              key={control}
+                              variant="outline"
+                              color="gray"
+                            >
                               {control}
                             </Badge>
                           ))}
                         </Group>
-                        {item.reviewerNote ? (
+                        <BasisPanel view={view} />
+                        {view.conclusion.status === "invalidated" ? (
+                          <Button
+                            size="xs"
+                            variant="light"
+                            color="yellow"
+                            leftSection={<RotateCcw size={14} />}
+                            onClick={() =>
+                              openConclusionModal(view.conclusion)
+                            }
+                          >
+                            按新依据重算并新建版本
+                          </Button>
+                        ) : null}
+                        {view.conclusion.status === "conflict" ? (
+                          <Text size="xs" c="grape">
+                            该草稿为并发提交的后到版本；先到版本已进入复核，两边依据见上。
+                          </Text>
+                        ) : null}
+                        {view.conclusion.reviewerNote ? (
                           <Alert
                             color={
-                              item.status === "approved" ? "teal" : "orange"
+                              view.conclusion.status === "approved"
+                                ? "teal"
+                                : "orange"
                             }
-                            title={`复核意见 · ${item.reviewer}`}
+                            title={`复核意见 · ${view.conclusion.reviewer}`}
                           >
-                            {item.reviewerNote}
+                            {view.conclusion.reviewerNote}
                           </Alert>
                         ) : null}
                       </Stack>
@@ -709,18 +886,19 @@ export function CaseDetailPage() {
             <Grid.Col span={{ base: 12, lg: 5 }}>
               <Paper withBorder p="md">
                 <Title order={4}>复核操作</Title>
-                {latestConclusion ? (
+                {reviewTarget && reviewTarget.status === "submitted" ? (
                   <>
                     <Text size="sm" c="dimmed" mt={5}>
-                      当前版本 V{latestConclusion.version} ·{" "}
-                      {dispositionLabels[latestConclusion.disposition]}
+                      待复核 V{reviewTarget.version} ·{" "}
+                      {reviewTarget.createdBy} ·{" "}
+                      {dispositionLabels[reviewTarget.disposition]}
                     </Text>
                     <Alert
                       color="orange"
                       icon={<RotateCcw size={16} />}
                       mt="md"
                     >
-                      关系关联不能直接作为结论。通过前应检查证据来源、发生时间与证据强度。
+                      复核以该版本冻结的证据与告警为准；即使台账随后更新，本版本依据不变。
                     </Alert>
                     <Textarea
                       label="复核意见"
@@ -754,7 +932,7 @@ export function CaseDetailPage() {
                   </>
                 ) : (
                   <Text c="dimmed" mt="md">
-                    尚无结论版本。
+                    没有处于待复核状态的结论。
                   </Text>
                 )}
               </Paper>
@@ -764,7 +942,7 @@ export function CaseDetailPage() {
 
         <Tabs.Panel value="alerts" pt="md">
           <Paper withBorder>
-            <Table.ScrollContainer minWidth={820}>
+            <Table.ScrollContainer minWidth={900}>
               <Table>
                 <Table.Thead>
                   <Table.Tr>
@@ -773,6 +951,7 @@ export function CaseDetailPage() {
                     <Table.Th>账户</Table.Th>
                     <Table.Th>风险</Table.Th>
                     <Table.Th>金额</Table.Th>
+                    <Table.Th>版本</Table.Th>
                     <Table.Th>检测时间</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
@@ -786,6 +965,11 @@ export function CaseDetailPage() {
                         <RiskBadge value={item.riskLevel} />
                       </Table.Td>
                       <Table.Td>¥{item.amount.toLocaleString("zh-CN")}</Table.Td>
+                      <Table.Td>
+                        <Badge size="sm" variant="light" color="cyan">
+                          v{item.version}
+                        </Badge>
+                      </Table.Td>
                       <Table.Td>
                         {new Date(item.detectedAt).toLocaleString("zh-CN", {
                           hour12: false,
@@ -961,9 +1145,14 @@ export function CaseDetailPage() {
       <Modal
         opened={evidenceOpened}
         onClose={evidenceModal.close}
-        title="登记案件证据"
+        title={evidenceForm.seriesId ? "补充证据新版本" : "登记案件证据"}
         size="lg"
       >
+        {evidenceForm.seriesId ? (
+          <Alert color="cyan" mb="md">
+            新版本会替代当前版本用于后续判定；旧版本保留在台账，已通过结论仍引用冻结的旧版本。
+          </Alert>
+        ) : null}
         <SimpleGrid cols={{ base: 1, sm: 2 }}>
           <TextInput
             label="证据名称"
@@ -1042,8 +1231,11 @@ export function CaseDetailPage() {
           <Button variant="default" onClick={evidenceModal.close}>
             取消
           </Button>
-          <Button loading={isAddingEvidence} onClick={handleAddEvidence}>
-            登记证据
+          <Button
+            loading={isAddingEvidence || isSupplementing}
+            onClick={handleSubmitEvidence}
+          >
+            {evidenceForm.seriesId ? "提交新版本" : "登记证据"}
           </Button>
         </Group>
       </Modal>
@@ -1054,6 +1246,27 @@ export function CaseDetailPage() {
         title="新建结论版本"
         size="lg"
       >
+        <Paper withBorder p="sm" mb="md" bg="var(--mantine-color-gray-0)">
+          <Text size="xs" fw={700} mb={6}>
+            提交时将冻结以下依据（{actor}）
+          </Text>
+          <Group gap="xs">
+            {caseCurrentEvidence.length === 0 ? (
+              <Text size="xs" c="red">
+                案件暂无证据，不能提交复核
+              </Text>
+            ) : (
+              caseCurrentEvidence.map((item) => (
+                <Badge key={item.id} size="sm" variant="light" color="cyan">
+                  {item.title} V{item.version}
+                </Badge>
+              ))
+            )}
+          </Group>
+          <Text size="xs" c="dimmed" mt={6}>
+            告警 {data.case.alertIds.length} 条将按当前版本冻结；若另一调查员先提交，你的提交会保留为冲突草稿。
+          </Text>
+        </Paper>
         <Select
           label="处置建议"
           value={conclusionForm.disposition}
@@ -1096,7 +1309,7 @@ export function CaseDetailPage() {
           }
         />
         <Alert color="gray" mt="md">
-          保存草稿不会触发复核；提交后生成独立版本并进入待复核状态。
+          保存草稿不会触发复核，但同样冻结当时依据；证据更新后草稿与待复核结论失效重算，已通过版本保留提交快照。
         </Alert>
         <Group justify="flex-end" mt="lg">
           <Button variant="default" onClick={conclusionModal.close}>

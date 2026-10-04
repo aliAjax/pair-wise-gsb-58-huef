@@ -47,6 +47,7 @@ export function AlertsPage() {
     (state) => state.alertsUi.selectedAlertIds,
   );
   const caseTargetId = useAppSelector((state) => state.alertsUi.caseTargetId);
+  const actor = useAppSelector((state) => state.alertsUi.actor);
   const { data: alerts = [], isFetching } = useGetAlertsQuery(filters);
   const { data: cases = [] } = useGetCasesQuery();
   const [linkAlerts, { isLoading: isLinking }] = useLinkAlertsToCaseMutation();
@@ -77,6 +78,7 @@ export function AlertsPage() {
       const result = await linkAlerts({
         alertIds: selectedIds,
         caseId: caseTargetId,
+        actor,
       }).unwrap();
       notifications.show({
         color: "teal",
@@ -99,7 +101,7 @@ export function AlertsPage() {
     }
     await Promise.all(
       selectedIds.map((alertId) =>
-        updateStatus({ alertId, status: "dismissed" }).unwrap(),
+        updateStatus({ alertId, status: "dismissed", actor }).unwrap(),
       ),
     );
     notifications.show({

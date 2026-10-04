@@ -1,9 +1,11 @@
 import { Badge } from "@mantine/core";
 import type {
   AlertStatus,
+  BasisState,
   CaseStatus,
   ConclusionStatus,
   EvidenceStrength,
+  EvidenceVersionState,
   RiskLevel,
 } from "../models/types";
 
@@ -47,6 +49,23 @@ const conclusionMap: Record<
   submitted: { color: "orange", label: "待复核" },
   approved: { color: "teal", label: "已通过" },
   returned: { color: "red", label: "已退回" },
+  invalidated: { color: "yellow", label: "依据失效待重算" },
+  conflict: { color: "grape", label: "并发冲突草稿" },
+};
+
+const basisMap: Record<BasisState, { color: string; label: string }> = {
+  frozen: { color: "cyan", label: "依据已冻结" },
+  current: { color: "teal", label: "依据最新" },
+  stale: { color: "yellow", label: "依据已更新" },
+  missing: { color: "red", label: "待补证" },
+};
+
+const evidenceVersionMap: Record<
+  EvidenceVersionState,
+  { color: string; label: string }
+> = {
+  current: { color: "teal", label: "当前版本" },
+  superseded: { color: "gray", label: "已被替代" },
 };
 
 interface BadgeProps<T extends string> {
@@ -95,6 +114,26 @@ export function ConclusionStatusBadge({
   value,
 }: BadgeProps<ConclusionStatus>) {
   const config = conclusionMap[value];
+  return (
+    <Badge color={config.color} variant="light">
+      {config.label}
+    </Badge>
+  );
+}
+
+export function BasisStateBadge({ value }: BadgeProps<BasisState>) {
+  const config = basisMap[value];
+  return (
+    <Badge color={config.color} variant={value === "missing" ? "filled" : "light"}>
+      {config.label}
+    </Badge>
+  );
+}
+
+export function EvidenceVersionBadge({
+  value,
+}: BadgeProps<EvidenceVersionState>) {
+  const config = evidenceVersionMap[value];
   return (
     <Badge color={config.color} variant="light">
       {config.label}

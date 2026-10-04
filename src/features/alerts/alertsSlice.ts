@@ -8,6 +8,8 @@ interface AlertsUiState {
   focusedEvidenceId?: string;
   focusedTimelineId?: string;
   selectedNodeId?: string;
+  /** 当前操作的调查员，用于并发提交演示。 */
+  actor: string;
 }
 
 const initialState: AlertsUiState = {
@@ -19,6 +21,7 @@ const initialState: AlertsUiState = {
   },
   selectedAlertIds: [],
   caseTargetId: "CASE-2026-017",
+  actor: "林澜",
 };
 
 const alertsSlice = createSlice({
@@ -54,6 +57,9 @@ const alertsSlice = createSlice({
     setRiskFilter(state, action: PayloadAction<RiskLevel | "all">) {
       state.filters.riskLevel = action.payload;
     },
+    setActor(state, action: PayloadAction<string>) {
+      state.actor = action.payload;
+    },
   },
 });
 
@@ -62,6 +68,7 @@ export const {
   focusTimeline,
   resetAlertFilters,
   selectNode,
+  setActor,
   setAlertFilters,
   setAlertSelection,
   setCaseTargetId,

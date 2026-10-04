@@ -3,6 +3,7 @@ import {
   Box,
   Group,
   NavLink,
+  Select,
   Stack,
   Text,
   ThemeIcon,
@@ -16,6 +17,9 @@ import {
   ShieldCheck,
 } from "lucide-react";
 import { NavLink as RouterNavLink, Outlet, useLocation } from "react-router-dom";
+import { useAppDispatch, useAppSelector } from "../app/hooks";
+import { setActor } from "../features/alerts/alertsSlice";
+import { RecoveryBanner } from "./RecoveryBanner";
 
 const navigation = [
   {
@@ -44,8 +48,12 @@ const navigation = [
   },
 ];
 
+const investigators = ["林澜", "周明", "宋佳", "赵平"];
+
 export function AppShell() {
   const location = useLocation();
+  const dispatch = useAppDispatch();
+  const actor = useAppSelector((state) => state.alertsUi.actor);
 
   return (
     <MantineAppShell
@@ -67,13 +75,19 @@ export function AppShell() {
               </Text>
             </Box>
           </Group>
-          <Group gap="xs" visibleFrom="md">
+          <Group gap="xs" visibleFrom="md" wrap="nowrap">
             <Text size="sm" c="dimmed">
-              当前角色
+              当前调查员
             </Text>
-            <Text size="sm" fw={600}>
-              案件调查员 / 林澜
-            </Text>
+            <Select
+              size="xs"
+              w={110}
+              value={actor}
+              onChange={(value) => value && dispatch(setActor(value))}
+              data={investigators}
+              allowDeselect={false}
+              aria-label="当前调查员"
+            />
           </Group>
         </Group>
       </MantineAppShell.Header>
@@ -103,6 +117,7 @@ export function AppShell() {
       </MantineAppShell.Navbar>
 
       <MantineAppShell.Main className="main-surface">
+        <RecoveryBanner />
         <Outlet />
       </MantineAppShell.Main>
     </MantineAppShell>

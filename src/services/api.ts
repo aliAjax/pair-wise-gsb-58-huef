@@ -2,15 +2,17 @@ import { createApi, fakeBaseQuery } from "@reduxjs/toolkit/query/react";
 import type {
   Alert,
   AlertFilters,
+  AlertStatus,
   AuditLog,
   CaseDisposition,
   CaseStatus,
   ConclusionVersion,
   DashboardSummary,
+  DecisionBatch,
   Evidence,
+  EvidenceStrength,
   InvestigationCase,
   InvestigationNode,
-  RiskLevel,
 } from "../models/types";
 import {
   appendAudit,
@@ -20,9 +22,25 @@ import {
   resetDatabase,
   writeDatabase,
 } from "./mockStorage";
+import {
+  BatchConflictError,
+  BatchInterruptedError,
+  BatchValidationError,
+  recoverInterruptedBatches,
+  runBatch,
+  type LinkAlertsInput,
+  type RegisterEvidenceInput,
+  type ReviewConclusionInput,
+  type SubmitConclusionInput,
+  type SupplementEvidenceInput,
+  type UpdateAlertStatusInput,
+} from "./decisionBatches";
+import { getCaseDecisionState } from "./decisionModel";
 
-const wait = (milliseconds = 260) =>
+const wait = (milliseconds = 220) =>
   new Promise((resolve) => window.setTimeout(resolve, milliseconds));
+
+const newRequestId = (): string => createId("REQ");
 
 export interface AddNodeInput {
   caseId: string;
@@ -36,10 +54,50 @@ export interface AddNodeInput {
   };
 }
 
+const toErrorMessage = (error: unknown): { status: string; error: string } => {
+  if (error instanceof BatchValidationError) {
+    return { status: "CUSTOM_ERROR", error: error.message };
+  }
+  if (error instanceof BatchInterruptedError) {
+    return {
+      status: "CUSTOM_ERROR",
+      error: `写库中断，判定批次 ${error.batch.id} 已保留进度，可从最近完整批次继续。`,
+    };
+  }
+  if (error instanceof Error && error.name === "WriteInterruptedError") {
+    return {
+      status: "CUSTOM_ERROR",
+      error: "写库中断，操作进度已持久化，可在审计页恢复后继续。",
+    };
+  }
+  if (error instanceof Error) {
+    return { status: "CUSTOM_ERROR", error: error.message };
+  }
+  return { status: "CUSTOM_ERROR", error: "操作失败，请稍后重试。" };
+};
+
+export interface CaseWorkspaceData {
+  case: InvestigationCase;
+  nodes: ReturnType<typeof readDatabase>["nodes"];
+  edges: ReturnType<typeof readDatabase>["edges"];
+  evidence: Evidence[];
+  conclusions: ConclusionVersion[];
+  effectiveStatus: CaseStatus;
+  hasStaleBasis: boolean;
+  hasMissingBasis: boolean;
+}
+
 export const bankApi = createApi({
   reducerPath: "bankApi",
   baseQuery: fakeBaseQuery(),
-  tagTypes: ["Alerts", "Cases", "Case", "Audit", "Dashboard"],
+  tagTypes: [
+    "Alerts",
+    "Cases",
+    "Case",
+    "Audit",
+    "Dashboard",
+    "Batches",
+  ],
   endpoints: (builder) => ({
     getDashboard: builder.query<DashboardSummary, void>({
       queryFn: async () => {
@@ -60,9 +118,14 @@ export const bankApi = createApi({
           low: 0,
         };
 
+        let staleBasisCases = 0;
+        let missingBasisCases = 0;
         database.cases.forEach((item) => {
-          caseStatusCounts[item.status] += 1;
+          const state = getCaseDecisionState(item.id, database);
+          caseStatusCounts[state.effectiveStatus] += 1;
           riskCounts[item.riskLevel] += 1;
+          if (state.hasStaleBasis) staleBasisCases += 1;
+          if (state.hasMissingBasis) missingBasisCases += 1;
         });
 
         return {
@@ -73,8 +136,16 @@ export const bankApi = createApi({
               (item) => item.riskLevel === "high",
             ).length,
             activeCases: activeCases.length,
-            pendingReview: database.cases.filter((item) =>
-              ["pending_review", "supplement"].includes(item.status),
+            pendingReview: database.cases.filter((item) => {
+              const state = getCaseDecisionState(item.id, database);
+              return ["pending_review", "supplement"].includes(
+                state.effectiveStatus,
+              );
+            }).length,
+            staleBasisCases,
+            missingBasisCases,
+            interruptedBatches: database.batches.filter(
+              (item) => item.status === "interrupted",
             ).length,
             totalExposure: database.alerts.reduce(
               (sum, item) => sum + item.amount,
@@ -125,20 +196,12 @@ export const bankApi = createApi({
     getCases: builder.query<InvestigationCase[], void>({
       queryFn: async () => {
         await wait();
+        // 案件状态已在批次提交与读取迁移时按统一判定视图回写
         return { data: readDatabase().cases };
       },
-      providesTags: ["Cases"],
+      providesTags: ["Cases", "Dashboard"],
     }),
-    getCaseWorkspace: builder.query<
-      {
-        case: InvestigationCase;
-        nodes: InvestigationNode[];
-        edges: ReturnType<typeof readDatabase>["edges"];
-        evidence: Evidence[];
-        conclusions: ConclusionVersion[];
-      },
-      string
-    >({
+    getCaseWorkspace: builder.query<CaseWorkspaceData, string>({
       queryFn: async (caseId) => {
         await wait();
         const database = readDatabase();
@@ -148,6 +211,7 @@ export const bankApi = createApi({
         if (!investigationCase) {
           return { error: { status: "CUSTOM_ERROR", error: "案件不存在" } };
         }
+        const state = getCaseDecisionState(caseId, database);
         return {
           data: {
             case: investigationCase,
@@ -159,12 +223,16 @@ export const bankApi = createApi({
             conclusions: database.conclusions
               .filter((item) => item.caseId === caseId)
               .sort((a, b) => b.version - a.version),
+            effectiveStatus: state.effectiveStatus,
+            hasStaleBasis: state.hasStaleBasis,
+            hasMissingBasis: state.hasMissingBasis,
           },
         };
       },
       providesTags: (_result, _error, caseId) => [
         { type: "Case", id: caseId },
         "Dashboard",
+        "Batches",
       ],
     }),
     getAuditLogs: builder.query<AuditLog[], void>({
@@ -172,68 +240,105 @@ export const bankApi = createApi({
         await wait();
         return { data: readDatabase().auditLogs };
       },
-      providesTags: ["Audit"],
+      providesTags: ["Audit", "Batches"],
+    }),
+    getBatches: builder.query<DecisionBatch[], void>({
+      queryFn: async () => {
+        await wait(80);
+        return {
+          data: readDatabase().batches.sort(
+            (a, b) =>
+              Date.parse(b.createdAt) - Date.parse(a.createdAt),
+          ),
+        };
+      },
+      providesTags: ["Batches", "Audit"],
+    }),
+    /** 案件页、概览与导出共用的判定报告。 */
+    getDecisionReport: builder.query<
+      {
+        generatedAt: string;
+        cases: Array<{
+          case: InvestigationCase;
+          effectiveStatus: CaseStatus;
+          conclusions: ReturnType<typeof getCaseDecisionState>["views"];
+        }>;
+        batches: DecisionBatch[];
+      },
+      { caseId?: string } | void
+    >({
+      queryFn: async (filter) => {
+        await wait(120);
+        const database = readDatabase();
+        const cases = database.cases
+          .filter((item) => !filter || !filter.caseId || item.id === filter.caseId)
+          .map((item) => {
+            const state = getCaseDecisionState(item.id, database);
+            return {
+              case: item,
+              effectiveStatus: state.effectiveStatus,
+              conclusions: state.views,
+            };
+          });
+        return {
+          data: {
+            generatedAt: nowIso(),
+            cases,
+            batches: database.batches,
+          },
+        };
+      },
+      providesTags: ["Batches", "Case", "Cases", "Dashboard", "Audit"],
     }),
     linkAlertsToCase: builder.mutation<
       Alert[],
-      { alertIds: string[]; caseId: string }
+      { alertIds: string[]; caseId: string; actor: string }
     >({
-      queryFn: async ({ alertIds, caseId }) => {
+      queryFn: async ({ alertIds, caseId, actor }) => {
         await wait();
-        const database = readDatabase();
-        const targetCase = database.cases.find((item) => item.id === caseId);
-        if (!targetCase) {
-          return { error: { status: "CUSTOM_ERROR", error: "案件不存在" } };
-        }
-        const updated = database.alerts.map((item) =>
-          alertIds.includes(item.id)
-            ? { ...item, caseId, status: "linked" as const }
-            : item,
-        );
-        const selected = updated.filter((item) => alertIds.includes(item.id));
-        targetCase.alertIds = Array.from(
-          new Set([...targetCase.alertIds, ...alertIds]),
-        );
-        targetCase.updatedAt = nowIso();
-        database.alerts = updated;
-        appendAudit(database, {
+        const input: LinkAlertsInput = {
+          alertIds,
           caseId,
-          actor: "林澜",
-          action: "批量关联告警",
-          detail: `关联告警 ${alertIds.join("、")}。`,
-        });
-        writeDatabase(database);
+          actor,
+          requestId: newRequestId(),
+        };
+        try {
+          runBatch({ kind: "link_alerts", input });
+        } catch (error) {
+          return { error: toErrorMessage(error) };
+        }
+        const selected = readDatabase().alerts.filter((item) =>
+          alertIds.includes(item.id),
+        );
         return { data: selected };
       },
-      invalidatesTags: ["Alerts", "Cases", "Audit", "Dashboard"],
+      invalidatesTags: ["Alerts", "Cases", "Audit", "Dashboard", "Batches"],
     }),
     updateAlertStatus: builder.mutation<
       Alert,
-      { alertId: string; status: Alert["status"] }
+      { alertId: string; status: AlertStatus; actor: string }
     >({
-      queryFn: async ({ alertId, status }) => {
+      queryFn: async ({ alertId, status, actor }) => {
         await wait();
-        const database = readDatabase();
-        const alert = database.alerts.find((item) => item.id === alertId);
-        if (!alert) {
-          return { error: { status: "CUSTOM_ERROR", error: "告警不存在" } };
+        const input: UpdateAlertStatusInput = {
+          alertId,
+          status,
+          actor,
+          requestId: newRequestId(),
+        };
+        try {
+          runBatch({ kind: "update_alert_status", input });
+        } catch (error) {
+          return { error: toErrorMessage(error) };
         }
-        alert.status = status;
-        appendAudit(database, {
-          caseId: alert.caseId,
-          actor: "林澜",
-          action: "更新告警状态",
-          detail: `${alert.id} 状态更新为 ${status}。`,
-        });
-        writeDatabase(database);
-        return { data: alert };
+        const alert = readDatabase().alerts.find((item) => item.id === alertId);
+        return alert
+          ? { data: alert }
+          : { error: { status: "CUSTOM_ERROR", error: "告警不存在" } };
       },
-      invalidatesTags: ["Alerts", "Case", "Audit", "Dashboard"],
+      invalidatesTags: ["Alerts", "Case", "Audit", "Dashboard", "Batches"],
     }),
-    addGraphNode: builder.mutation<
-      InvestigationNode,
-      AddNodeInput
-    >({
+    addGraphNode: builder.mutation<InvestigationNode, AddNodeInput>({
       queryFn: async ({ caseId, node, relation }) => {
         await wait();
         const database = readDatabase();
@@ -294,44 +399,110 @@ export const bankApi = createApi({
     }),
     addEvidence: builder.mutation<
       Evidence,
-      Omit<Evidence, "id" | "submittedAt" | "submittedBy" | "version">
+      {
+        caseId: string;
+        actor: string;
+        title: string;
+        source: string;
+        strength: EvidenceStrength;
+        occurredAt: string;
+        attachment: string;
+        note: string;
+      }
     >({
       queryFn: async (input) => {
         await wait();
-        const database = readDatabase();
-        const evidence: Evidence = {
-          ...input,
-          id: createId("EV"),
-          submittedAt: nowIso(),
-          submittedBy: "林澜",
-          version: 1,
-        };
-        database.evidence.unshift(evidence);
-        const targetCase = database.cases.find(
-          (item) => item.id === input.caseId,
-        );
-        if (targetCase) {
-          targetCase.updatedAt = nowIso();
-        }
-        appendAudit(database, {
+        const batchInput: RegisterEvidenceInput = {
           caseId: input.caseId,
-          actor: "林澜",
-          action: "新增证据",
-          detail: `${input.title} 已登记，来源为 ${input.source}。`,
-        });
-        writeDatabase(database);
-        return { data: evidence };
+          actor: input.actor,
+          title: input.title,
+          source: input.source,
+          strength: input.strength,
+          occurredAt: input.occurredAt,
+          attachment: input.attachment,
+          note: input.note,
+          requestId: newRequestId(),
+        };
+        try {
+          const outcome = runBatch({
+            kind: "register_evidence",
+            input: batchInput,
+          });
+          const evidenceId = `${batchInput.requestId}__evidence`;
+          const evidence = readDatabase().evidence.find(
+            (item) => item.id === evidenceId,
+          );
+          if (!evidence) {
+            return {
+              error: { status: "CUSTOM_ERROR", error: "证据登记未完成。" },
+            };
+          }
+          void outcome;
+          return { data: evidence };
+        } catch (error) {
+          return { error: toErrorMessage(error) };
+        }
       },
       invalidatesTags: (_result, _error, input) => [
         { type: "Case", id: input.caseId },
         "Audit",
         "Dashboard",
+        "Batches",
+      ],
+    }),
+    supplementEvidence: builder.mutation<
+      Evidence,
+      {
+        caseId: string;
+        actor: string;
+        seriesId: string;
+        title: string;
+        source: string;
+        strength: EvidenceStrength;
+        occurredAt: string;
+        attachment: string;
+        note: string;
+      }
+    >({
+      queryFn: async (input) => {
+        await wait();
+        const batchInput: SupplementEvidenceInput = {
+          ...input,
+          requestId: newRequestId(),
+        };
+        try {
+          runBatch({ kind: "supplement_evidence", input: batchInput });
+        } catch (error) {
+          return { error: toErrorMessage(error) };
+        }
+        const evidenceId = `${batchInput.requestId}__evidence`;
+        const evidence = readDatabase().evidence.find(
+          (item) => item.id === evidenceId,
+        );
+        return evidence
+          ? { data: evidence }
+          : {
+              error: { status: "CUSTOM_ERROR", error: "证据补充未完成。" },
+            };
+      },
+      invalidatesTags: (_result, _error, input) => [
+        { type: "Case", id: input.caseId },
+        "Audit",
+        "Dashboard",
+        "Batches",
       ],
     }),
     saveConclusion: builder.mutation<
-      ConclusionVersion,
+      {
+        conclusion?: ConclusionVersion;
+        conflict?: {
+          winnerConclusionId: string;
+          winnerBatchId: string;
+        };
+      },
       {
         caseId: string;
+        actor: string;
         disposition: CaseDisposition;
         rationale: string;
         riskControls: string[];
@@ -340,52 +511,46 @@ export const bankApi = createApi({
     >({
       queryFn: async (input) => {
         await wait();
-        const database = readDatabase();
-        const existing = database.conclusions.filter(
-          (item) => item.caseId === input.caseId,
-        );
-        const conclusion: ConclusionVersion = {
-          id: createId("CV"),
+        const batchInput: SubmitConclusionInput = {
           caseId: input.caseId,
-          version:
-            existing.reduce((max, item) => Math.max(max, item.version), 0) + 1,
-          status: input.submit ? "submitted" : "draft",
+          actor: input.actor,
           disposition: input.disposition,
           rationale: input.rationale,
           riskControls: input.riskControls,
-          createdBy: "林澜",
-          createdAt: nowIso(),
-          reviewer: "赵平",
+          submit: Boolean(input.submit),
+          requestId: newRequestId(),
         };
-        database.conclusions.unshift(conclusion);
-        const targetCase = database.cases.find(
-          (item) => item.id === input.caseId,
-        );
-        if (targetCase) {
-          targetCase.status = input.submit ? "pending_review" : "investigating";
-          targetCase.updatedAt = nowIso();
+        try {
+          const outcome = runBatch({
+            kind: "submit_conclusion",
+            input: batchInput,
+          });
+          return {
+            data: {
+              conclusion: outcome.conclusion,
+              conflict: outcome.conflict,
+            },
+          };
+        } catch (error) {
+          if (error instanceof BatchConflictError) {
+            return { data: { conflict: error.outcome.conflict } };
+          }
+          return { error: toErrorMessage(error) };
         }
-        appendAudit(database, {
-          caseId: input.caseId,
-          actor: "林澜",
-          action: "保存结论版本",
-          detail: `${conclusion.id} V${conclusion.version} 已${input.submit ? "提交复核" : "保存为草稿"}。`,
-        });
-        writeDatabase(database);
-        return { data: conclusion };
       },
       invalidatesTags: (_result, _error, input) => [
         { type: "Case", id: input.caseId },
         "Audit",
         "Cases",
         "Dashboard",
+        "Batches",
       ],
     }),
     transitionCase: builder.mutation<
       InvestigationCase,
-      { caseId: string; status: CaseStatus; reason?: string }
+      { caseId: string; status: CaseStatus; reason?: string; actor: string }
     >({
-      queryFn: async ({ caseId, status, reason }) => {
+      queryFn: async ({ caseId, status, reason, actor }) => {
         await wait();
         const database = readDatabase();
         const targetCase = database.cases.find((item) => item.id === caseId);
@@ -410,7 +575,7 @@ export const bankApi = createApi({
         targetCase.updatedAt = nowIso();
         appendAudit(database, {
           caseId,
-          actor: "林澜",
+          actor,
           action: "案件状态流转",
           detail: `状态更新为 ${status}${reason ? `，原因：${reason}` : ""}。`,
         });
@@ -428,53 +593,63 @@ export const bankApi = createApi({
       ConclusionVersion,
       {
         caseId: string;
+        actor: string;
         conclusionId: string;
         decision: "approve" | "return";
         reviewerNote: string;
       }
     >({
-      queryFn: async ({ caseId, conclusionId, decision, reviewerNote }) => {
+      queryFn: async ({ caseId, actor, conclusionId, decision, reviewerNote }) => {
         await wait();
-        const database = readDatabase();
-        const conclusion = database.conclusions.find(
+        const input: ReviewConclusionInput = {
+          caseId,
+          actor,
+          conclusionId,
+          decision,
+          reviewerNote,
+          requestId: newRequestId(),
+        };
+        try {
+          runBatch({ kind: "review_conclusion", input });
+        } catch (error) {
+          return { error: toErrorMessage(error) };
+        }
+        const conclusion = readDatabase().conclusions.find(
           (item) => item.id === conclusionId,
         );
-        if (!conclusion) {
-          return { error: { status: "CUSTOM_ERROR", error: "结论不存在" } };
-        }
-        if (
-          conclusion.status !== "submitted" &&
-          conclusion.status !== "draft"
-        ) {
-          return {
-            error: {
-              status: "CUSTOM_ERROR",
-              error: "当前版本不能再次复核。",
-            },
-          };
-        }
-        conclusion.status = decision === "approve" ? "approved" : "returned";
-        conclusion.reviewerNote = reviewerNote;
-        const targetCase = database.cases.find((item) => item.id === caseId);
-        if (targetCase) {
-          targetCase.status =
-            decision === "approve" ? "closed" : "supplement";
-          targetCase.updatedAt = nowIso();
-        }
-        appendAudit(database, {
-          caseId,
-          actor: "赵平",
-          action: decision === "approve" ? "复核通过" : "退回补证",
-          detail: `${conclusion.id} 已${decision === "approve" ? "通过" : "退回"}。${reviewerNote}`,
-        });
-        writeDatabase(database);
-        return { data: conclusion };
+        return conclusion
+          ? { data: conclusion }
+          : {
+              error: { status: "CUSTOM_ERROR", error: "复核未完成。" },
+            };
       },
       invalidatesTags: (_result, _error, input) => [
         { type: "Case", id: input.caseId },
         "Cases",
         "Audit",
         "Dashboard",
+        "Batches",
+      ],
+    }),
+    recoverBatches: builder.mutation<
+      { recovered: Array<{ id: string; kind: string }> },
+      void
+    >({
+      queryFn: async () => {
+        await wait(180);
+        const recovered = recoverInterruptedBatches().map((item) => ({
+          id: item.batch.id,
+          kind: item.batch.kind,
+        }));
+        return { data: { recovered } };
+      },
+      invalidatesTags: [
+        "Batches",
+        "Audit",
+        "Cases",
+        "Case",
+        "Dashboard",
+        "Alerts",
       ],
     }),
     resetMockData: builder.mutation<{ ok: boolean }, void>({
@@ -483,7 +658,7 @@ export const bankApi = createApi({
         resetDatabase();
         return { data: { ok: true } };
       },
-      invalidatesTags: ["Alerts", "Cases", "Case", "Audit", "Dashboard"],
+      invalidatesTags: ["Alerts", "Cases", "Case", "Audit", "Dashboard", "Batches"],
     }),
   }),
 });
@@ -493,16 +668,20 @@ export const {
   useAddGraphNodeMutation,
   useGetAlertsQuery,
   useGetAuditLogsQuery,
+  useGetBatchesQuery,
   useGetCaseWorkspaceQuery,
   useGetCasesQuery,
   useGetDashboardQuery,
+  useGetDecisionReportQuery,
   useLinkAlertsToCaseMutation,
+  useRecoverBatchesMutation,
   useResetMockDataMutation,
   useReviewConclusionMutation,
   useSaveConclusionMutation,
+  useSupplementEvidenceMutation,
   useTransitionCaseMutation,
   useUpdateAlertStatusMutation,
   useUpdateGraphNodeMutation,
 } = bankApi;
 
-export type { RiskLevel };
+export type { CaseDisposition };

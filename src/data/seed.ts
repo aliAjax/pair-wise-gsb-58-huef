@@ -24,6 +24,7 @@ export const seedAlerts: Alert[] = [
     deviceId: "DV-A91F",
     ip: "117.136.40.17",
     caseId: "CASE-2026-017",
+    version: 1,
   },
   {
     id: "AL-20260929-002",
@@ -40,6 +41,7 @@ export const seedAlerts: Alert[] = [
     deviceId: "DV-A91F",
     ip: "117.136.40.17",
     caseId: "CASE-2026-017",
+    version: 1,
   },
   {
     id: "AL-20260928-014",
@@ -55,6 +57,7 @@ export const seedAlerts: Alert[] = [
     tags: ["高风险名单"],
     deviceId: "DV-C110",
     ip: "183.14.30.22",
+    version: 1,
   },
   {
     id: "AL-20260928-009",
@@ -71,6 +74,7 @@ export const seedAlerts: Alert[] = [
     deviceId: "DV-E204",
     ip: "117.136.40.17",
     caseId: "CASE-2026-017",
+    version: 1,
   },
   {
     id: "AL-20260927-021",
@@ -86,6 +90,7 @@ export const seedAlerts: Alert[] = [
     tags: ["高频小额"],
     deviceId: "DV-H812",
     ip: "120.232.12.8",
+    version: 1,
   },
   {
     id: "AL-20260927-012",
@@ -102,6 +107,7 @@ export const seedAlerts: Alert[] = [
     deviceId: "ATM-SH-307",
     ip: "221.5.80.12",
     caseId: "CASE-2026-016",
+    version: 1,
   },
   {
     id: "AL-20260926-032",
@@ -117,6 +123,7 @@ export const seedAlerts: Alert[] = [
     tags: ["路径变化"],
     deviceId: "DV-CORP-42",
     ip: "61.140.9.81",
+    version: 1,
   },
   {
     id: "AL-20260925-018",
@@ -133,6 +140,7 @@ export const seedAlerts: Alert[] = [
     deviceId: "DV-A91F",
     ip: "117.136.40.17",
     caseId: "CASE-2026-015",
+    version: 1,
   },
 ];
 
@@ -334,6 +342,7 @@ export const seedEdges: InvestigationEdge[] = [
 export const seedEvidence: Evidence[] = [
   {
     id: "EV-017-001",
+    seriesId: "EV-017-001",
     caseId: "CASE-2026-017",
     title: "交易明细提取单",
     source: "核心交易系统",
@@ -344,9 +353,11 @@ export const seedEvidence: Evidence[] = [
     attachment: "trade-detail-20260929.csv",
     note: "覆盖 9 月 27 日至 29 日并包含原始流水号。",
     version: 1,
+    versionState: "current",
   },
   {
     id: "EV-017-002",
+    seriesId: "EV-017-002",
     caseId: "CASE-2026-017",
     title: "设备指纹登录日志",
     source: "风控日志平台",
@@ -356,10 +367,12 @@ export const seedEvidence: Evidence[] = [
     submittedBy: "周明",
     attachment: "device-loginelog-20260929.json",
     note: "包含设备、认证方式与风险标签。",
-    version: 2,
+    version: 1,
+    versionState: "current",
   },
   {
     id: "EV-017-003",
+    seriesId: "EV-017-003",
     caseId: "CASE-2026-017",
     title: "收款商户登记材料",
     source: "商户管理系统",
@@ -370,9 +383,11 @@ export const seedEvidence: Evidence[] = [
     attachment: "merchant-7791.pdf",
     note: "登记地址与交易 IP 归属地不一致，需要现场或电话核实。",
     version: 1,
+    versionState: "current",
   },
   {
     id: "EV-015-001",
+    seriesId: "EV-015-001",
     caseId: "CASE-2026-015",
     title: "跨案受益关系导出",
     source: "案件关联分析",
@@ -383,10 +398,26 @@ export const seedEvidence: Evidence[] = [
     attachment: "beneficiary-links.xlsx",
     note: "仅证明共同收款方，未证明资金最终归属。",
     version: 1,
+    versionState: "current",
   },
 ];
 
-export const seedConclusions: ConclusionVersion[] = [
+/**
+ * 演示用旧结论：故意不携带证据版本与告警快照，
+ * 首次读取时由迁移程序按提交时间回填，回填不上则标记待补证。
+ */
+type LegacyConclusion = Omit<
+  ConclusionVersion,
+  "evidenceBasis" | "alertBasis" | "basisState"
+> &
+  Partial<
+    Pick<
+      ConclusionVersion,
+      "evidenceBasis" | "alertBasis" | "basisState"
+    >
+  >;
+
+const legacyConclusions: LegacyConclusion[] = [
   {
     id: "CV-017-001",
     caseId: "CASE-2026-017",
@@ -425,6 +456,8 @@ export const seedConclusions: ConclusionVersion[] = [
     reviewerNote: "补充商户合同与付款用途后再提交，不得以关联代替结论。",
   },
 ];
+
+export const seedConclusions = legacyConclusions as ConclusionVersion[];
 
 export const seedAuditLogs: AuditLog[] = [
   {

@@ -14,6 +14,8 @@ import {
 import {
   ArrowRight,
   CircleAlert,
+  DatabaseZap,
+  FileWarning,
   Files,
   ShieldAlert,
   WalletCards,
@@ -73,6 +75,34 @@ export function DashboardPage() {
     },
   ];
 
+  const basisWarnings = [
+    data.staleBasisCases > 0
+      ? {
+          color: "yellow",
+          icon: FileWarning,
+          text: `${data.staleBasisCases} 件案件的草稿/待复核结论依据已更新，需重算；已通过版本保留冻结快照。`,
+        }
+      : null,
+    data.missingBasisCases > 0
+      ? {
+          color: "red",
+          icon: FileWarning,
+          text: `${data.missingBasisCases} 件案件的旧结论回填不到证据版本，已标记待补证。`,
+        }
+      : null,
+    data.interruptedBatches > 0
+      ? {
+          color: "orange",
+          icon: DatabaseZap,
+          text: `${data.interruptedBatches} 个判定批次写库中断，可在审计与报告页从最近完整批次继续。`,
+        }
+      : null,
+  ].filter(Boolean) as Array<{
+    color: string;
+    icon: typeof FileWarning;
+    text: string;
+  }>;
+
   const highRiskTotal = data.riskCounts.high + data.riskCounts.medium;
   const highRiskRatio =
     highRiskTotal === 0
@@ -117,6 +147,34 @@ export function DashboardPage() {
           );
         })}
       </SimpleGrid>
+
+      {basisWarnings.length > 0 ? (
+        <Stack gap="xs">
+          {basisWarnings.map((warning) => {
+            const Icon = warning.icon;
+            return (
+              <Paper
+                key={warning.text}
+                withBorder
+                p="sm"
+                style={{
+                  borderColor: `var(--mantine-color-${warning.color}-4)`,
+                  cursor: "pointer",
+                }}
+                onClick={() => navigate("/audit")}
+              >
+                <Group gap="sm" wrap="nowrap">
+                  <Icon
+                    size={18}
+                    color={`var(--mantine-color-${warning.color}-7)`}
+                  />
+                  <Text size="sm">{warning.text}</Text>
+                </Group>
+              </Paper>
+            );
+          })}
+        </Stack>
+      ) : null}
 
       <Grid>
         <Grid.Col span={{ base: 12, lg: 8 }}>
